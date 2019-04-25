@@ -149,7 +149,10 @@ contract RelayHub is RelayHubApi {
 
     function check_sig(address signer, bytes32 hash, bytes memory sig) pure internal returns (bool) {
         // Check if @v,@r,@s are a valid signature of @signer for @hash
-        return signer == ecrecover(hash, uint8(sig[0]), LibBytes.readBytes32(sig,1), LibBytes.readBytes32(sig,33));
+        uint8 v = uint8(sig[0]);
+        bytes32 r = LibBytes.readBytes32(sig,1);
+        bytes32 s = LibBytes.readBytes32(sig,33);
+        return signer == ecrecover(hash, v, r, s);
     }
 
 	//check if the Hub can accept this relayed operation.
@@ -251,6 +254,26 @@ contract RelayHub is RelayHubApi {
         require(relays[addr1].stake > 0, "Unstaked relay");
         // Checking that the relay wasn't penalized yet
         require(relays[addr1].state != State.PENALIZED, "Relay already penalized");
+        penalize_internal(addr1);
+    }
+
+    function penalize_illegal_transaction(bytes memory unsigned_tx1, bytes memory sig1) public {
+        // Externally-owned accounts that are registered as relays are not allowed to perform
+        // any transactions other than 'relay' and 'register_relay'. Thay have no legitimate
+        // reasons to do that, so this behaviour is too suspicious to be left unattended.
+        // It is enforced by penalizing the relay for a transaction that we consider illegal.
+
+        Transaction memory decoded_tx1 = decode_transaction(unsigned_tx1);
+        if (decoded_tx1.to == address(this)){
+            bytes4 selector = RecipientUtils.getMethodSig(decoded_tx1.data);
+            require (selector != this.relay.selector && selector != this.register_relay.selector, "Legal relay transaction");
+        }
+        bytes32 hash = keccak256(abi.encodePacked(unsigned_tx1));
+        address addr = ecrecover(hash, uint8(sig1[0]), LibBytes.readBytes32(sig1,1), LibBytes.readBytes32(sig1,33));
+        penalize_internal(addr);
+    }
+
+    function penalize_internal(address addr1) private {
         // compensating the sender with the stake of the relay
         uint amount = relays[addr1].stake;
         // move ownership of relay
